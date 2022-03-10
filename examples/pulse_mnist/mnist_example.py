@@ -261,12 +261,12 @@ instructions = pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).inst
 
 amp_list = list(map(lambda x: x[1].pulse.amp, pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions))
 amp_list = np.array([amp_list])
-ampr_list = amp_list.real
-ampi_list = amp_list.imag
-amp_list = np.append(ampr_list, ampi_list)
-mid = len(amp_list)/2
-rag = np.arange(1,1.1,0.02)
-amps_list = [amp_list*x for x in rag]
+ampa_list = np.angle(np.array([amp_list]))
+ampn_list = np.abs(np.array([amp_list]))
+amps_list = np.append(ampn_list, ampa_list)
+print(amps_list)
+rag = np.arange(1,1.1,0.05)
+amps_list = [amps_list*x for x in rag]
 amps_list = np.array(amps_list)
 
 
@@ -369,7 +369,7 @@ def bayes_opt(func, dim_design, N_sim, N_initial, w_bound, hyper_param, store=Fa
             ub = np.divide(w_bound[:, 1] - wrk_mean, wrk_std+1e-8)
             #out=np.zeros_like(w_bound[:, 1]-wrk_mean), where=wrk_std!=0
             LC = LinearConstraint(np.eye(dim_design), lb, ub, keep_feasible=False)
-            cur_opt = minimize(acq_func, np.divide(w_init - wrk_mean, wrk_std, out=np.zeros_like(w_init - wrk_mean-wrk_mean), where=wrk_std!=0), method='COBYLA', constraints=LC,
+            cur_opt = minimize(acq_func, np.divide(w_init - wrk_mean, wrk_std, out=np.zeros_like(w_init - wrk_mean), where=wrk_std!=0), method='COBYLA', constraints=LC,
                                options={'disp': False})
             wrk = acq_func(cur_opt.x)
             if cur_min >= wrk:
@@ -386,8 +386,8 @@ def bayes_opt(func, dim_design, N_sim, N_initial, w_bound, hyper_param, store=Fa
 
         # save and display information
         ind = np.argmin(Y)
-        cur_predmean, cur_predstd = model.predict((np.divide(newX - wrk_mean, wrk_std, out=np.zeros_like(newX - wrk_mean-wrk_mean), where=wrk_std!=0)).reshape(1, -1), return_std=True)
-        cur_acq = acq_func(np.divide(newX - wrk_mean, wrk_std, out=np.zeros_like(newX - wrk_mean-wrk_mean), where=wrk_std!=0))
+        cur_predmean, cur_predstd = model.predict((np.divide(newX - wrk_mean, wrk_std, out=np.zeros_like(newX - wrk_mean), where=wrk_std!=0)).reshape(1, -1), return_std=True)
+        cur_acq = acq_func(np.divide(newX - wrk_mean, wrk_std, out=np.zeros_like(newX - wrk_mean), where=wrk_std!=0))
         cur_best_w, cur_best_y = X[ind, :], Y[ind]
         pred_mean[cur_count - N_initial - 1], pred_std[cur_count - N_initial - 1] = cur_predmean, cur_predstd
         acq_list[cur_count - N_initial - 1] = cur_acq
@@ -413,7 +413,7 @@ def bayes_opt(func, dim_design, N_sim, N_initial, w_bound, hyper_param, store=Fa
 
 def Fucsimulate(cur_best_w):
     mid = int(len(cur_best_w)/2)
-    modified_list = cur_best_w[mid:]*1j + cur_best_w[:mid]
+    modified_list = ((cur_best_w[:mid])*np.cos(cur_best_w[mid:]) + (cur_best_w[:mid])*np.sin(cur_best_w[mid:])*1j)
     modified_list = np.ndarray.tolist(modified_list)
     backend = provider.get_backend('ibmq_jakarta')
     target_all = []
@@ -455,7 +455,7 @@ def Fucsimulate(cur_best_w):
 
         #quito_sim = qiskit.providers.aer.PulseSimulator.from_backend(FakeQuito())
     for i in range(0, len(pulse_encoding)):
-        pulse_sim = assemble(pulse_prog + pulse_encoding[i], backend=backend, shots=512)
+        pulse_sim = assemble(pulse_prog + pulse_encoding[i], backend=backend, shots=128)
         results = backend.run(pulse_sim).result()
         counts = results.data()['counts']
         result = get_expectations_from_counts(counts, 4)
@@ -482,10 +482,12 @@ if __name__ == '__main__':
     seed = 0
     np.random.seed(seed)
     # example: minimize x1^2 + x2^2 + x3^2 + ...
-    dim_design = 246
+    dim_design = int(len(amps_list[0]))
+    Mid = int(len(amps_list[0])/2)
     N_total = 200
-    N_initial = 6
-    bound = np.ones((dim_design, 2)) * np.array([-1, 1])  # -inf < xi < inf
+    N_initial = 3
+    bound = np.ones((dim_design, 2)) * np.array([0, 1]) 
+    bound[-Mid:] = bound[-Mid:]*360 # -inf < xi < inf
 
     func = Fucsimulate
     cur_best_w, cur_best_y = bayes_opt(func, dim_design, N_total, N_initial, bound, ['LCB', 0.3],
