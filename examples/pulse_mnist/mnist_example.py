@@ -21,7 +21,7 @@ IBMQ.save_account('51a2a5d55d3e1d9683ab4f135fe6fbb84ecf3221765e19adb408699d43c6e
 IBMQ.load_account()
 # provider = IBMQ.load_account()
 provider = IBMQ.get_provider(
-    hub="ibm-q-research", group="mass-inst-tech-1", project="main"
+    hub="ibm-q-research", group="MIT-1", project="main"
 )
 backend = provider.get_backend('ibmq_jakarta')
 class QFCModel(tq.QuantumModule):
@@ -78,17 +78,19 @@ class QFCModel(tq.QuantumModule):
         self.measure = tq.MeasureAll(tq.PauliZ)
 
     def forward(self, x, use_qiskit=False):
+        backend = provider.get_backend('ibmq_jakarta')
         bsz = x.shape[0]
         x = F.avg_pool2d(x, 6).view(bsz, 16)
         circs_pulse = self.encoder.to_qiskit(4,x)
         print(circs_pulse)
         circs_pulse[0].draw()
+        circs_pulse = transpile(circs_pulse, backend = backend, basis_gates=['u1', 'u2', 'u3', 'cx'], initial_layout = initial_mapping, optimization_level=2)
         backend = provider.get_backend('ibmq_jakarta')
         for i in range (0, len(circs_pulse)):
-                    with pulse.build(backend) as pulse_prog:
+                    with pulse.build(backend) as pulse_enco:
                          pulse.call(circs_pulse[i])
                             
-                    pulse_encoding.append(pulse_prog)
+                    pulse_encoding.append(pulse_enco)
         if use_qiskit:
             x = self.qiskit_processor.process_parameterized(
                 self.q_device, self.encoder, self.q_layer, self.measure, x)
@@ -161,7 +163,7 @@ def main():
     dataset = MNIST(
         root='./mnist_data',
         train_valid_split_ratio=[0.9, 0.1],
-        digits_of_interest=[3, 6],
+        digits_of_interest=[0,1,2,3],
     )
     dataflow = dict()
 
@@ -205,7 +207,7 @@ from qiskit.pulse import filters
 from qiskit.pulse.filters import composite_filter, filter_instructions
 from typing import List, Tuple, Iterable, Union, Dict, Callable, Set, Optional, Any
 from qiskit.pulse.instructions import Instruction
-from qiskit.compiler import assemble, schedule
+from qiskit.compiler import assemble, schedule, transpile
 import numpy as np
 import torch.nn.functional as F
 import torch
@@ -218,7 +220,7 @@ from sklearn.gaussian_process.kernels import RBF, ConstantKernel, Matern, WhiteK
 from scipy.stats import norm
 import pdb
 from qiskit.compiler import assemble, schedule
-
+initial_mapping = [5, 3, 4, 1] 
 backend = provider.get_backend('ibmq_jakarta')
 
 with pulse.build(backend) as pulse_prog:
@@ -233,6 +235,7 @@ with pulse.build(backend) as pulse_prog:
         qc.sx(2)
         qc.cx(3,1)
         qc.measure_all()
+        qc = transpile(qc, backend = backend, basis_gates=['u1', 'u2', 'u3', 'cx'], initial_layout = initial_mapping, optimization_level=2)
         print(qc)
         pulse.call(qc)
         print(pulse)
@@ -421,7 +424,7 @@ def Fucsimulate(cur_best_w):
     dataset = MNIST(
         root='./mnist_data',
         train_valid_split_ratio=[0.9, 0.1],
-        digits_of_interest=[3, 6],
+        digits_of_interest=[0,1,2, 3],
     )
 
     dataflow = dict()
@@ -448,6 +451,7 @@ def Fucsimulate(cur_best_w):
             qc.cx(3,1)
             qc.measure_all()
             print(qc)
+            qc = transpile(qc, backend = backend, basis_gates=['u1', 'u2', 'u3', 'cx'],initial_layout = initial_mapping, optimization_level=2)
             pulse.call(qc)
             print(pulse)
     for inst, amp in zip(pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions, modified_list):
@@ -475,7 +479,70 @@ def Fucsimulate(cur_best_w):
     result = corrects / size
     return 1 - result
 
+def test(cur_best_w):
+    modified_list = ((cur_best_w[:int(len(cur_best_w)/2)])*np.cos(cur_best_w[int(len(cur_best_w)/2):]) + (cur_best_w[:int(len(cur_best_w)/2)])*np.sin(cur_best_w[int(len(cur_best_w)/2):])*1j)
+    modified_list = np.ndarray.tolist(modified_list)
+    target_all = []
+    output_all = []
+    dataset = MNIST(
+        root='./mnist_data',
+        train_valid_split_ratio=[0.9, 0.1],
+        digits_of_interest=[0, 1 ,2, 3],
+    )
+
+    dataflow = dict()
+
+    for split in dataset:
+        sampler = torch.utils.data.SequentialSampler(dataset[split])
+        dataflow[split] = torch.utils.data.DataLoader(
+            dataset[split],
+            sampler=sampler,
+            num_workers=8,
+            pin_memory=True)
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+    with pulse.build(backend) as pulse_prog:
+            qc = QuantumCircuit(4)
+            qc.cx(1, 0)
+            qc.rz(-4.1026, 3)
+            qc.cx(0,1)
+            qc.h(3)
+            qc.rx(1.2803, 0)
+            qc.ry(0.39487, 1)
+            qc.crx(-3.025, 0, 2)
+            qc.sx(2)
+            qc.cx(3,1)
+            qc.measure_all()
+            qc = transpile(qc, backend = backend, basis_gates=['u1', 'u2', 'u3', 'cx'], initial_layout = initial_mapping, optimization_level=2)
+            print(qc)
+            pulse.call(qc)
+            print(pulse)
+    for inst, amp in zip(pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions, modified_list):
+        inst[1].pulse._amp = amp
+    for i in range(0, len(pulse_encoding)):
+        quito_sim = qiskit.providers.aer.PulseSimulator.from_backend(FakeQuito())
+        pulse_sim = assemble(pulse_prog + pulse_encoding[i], backend=quito_sim, shots=128, meas_level = 2, meas_return = 'single')
+        results = quito_sim.run(pulse_sim).result()
+        counts = results.data()['counts']
+        result = get_expectations_from_counts(counts, 4)
+        result = torch.tensor(result)
+        result = F.log_softmax(result, dim=1)
+        output_all.append(result)
+    for feed_dict in dataflow['test']:
+        targets = feed_dict['digit'].to(device)
+        target_all.append(targets)
+    target_all = torch.cat(target_all, dim=0)
+    output_all = torch.cat(output_all, dim=0)
+
+    _, indices = output_all.topk(1, dim=1)
+    masks = indices.eq(target_all.view(-1, 1).expand_as(indices))
+    size = target_all.shape[0]
+    corrects = masks.sum().item()
+    result = corrects / size
+    return 1 - result
+
 if __name__ == '__main__':
+    initial_mapping = [5, 3, 4, 1] 
     pdb.set_trace()
     main()
     print(pulse_encoding)
@@ -484,7 +551,7 @@ if __name__ == '__main__':
     # example: minimize x1^2 + x2^2 + x3^2 + ...
     dim_design = int(len(amps_list[0]))
     Mid = int(len(amps_list[0])/2)
-    N_total = 200
+    N_total = 50
     N_initial = 3
     bound = np.ones((dim_design, 2)) * np.array([0, 1]) 
     bound[-Mid:] = bound[-Mid:]*360 # -inf < xi < inf
@@ -495,4 +562,5 @@ if __name__ == '__main__':
 
     print(cur_best_w)
     print(cur_best_y)
-    
+    accuracy = test(cur_best_w)
+    print(accuracy)
