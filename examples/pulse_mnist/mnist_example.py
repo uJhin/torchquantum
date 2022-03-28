@@ -1,3 +1,59 @@
+from cmath import pi
+from pandas import concat
+import torch
+import torch.nn.functional as F
+import torch.optim as optim
+import argparse
+
+import torchquantum as tq
+import torchquantum.functional as tqf
+from torch.utils.data import Dataset,DataLoader
+import numpy as np
+from torch.optim.lr_scheduler import CosineAnnealingLR
+import math
+import sys
+def binary(input,th = 0.5):
+    output = input.new(input.size())
+    output[input >= th] = 1
+    output[input < th] = 0
+    return output
+
+def limit(input,high = 1.0,low = 0.0):
+    output = input.new(input.size())
+    output = input
+    output[input >= high] = high
+    output[input <= low] = low
+    return output
+def sign(input,th = 0.5):
+    output = input.new(input.size())
+    output[input >= th] = 1
+    output[input < th] = -1
+    return output
+
+class RandomDataset(Dataset):
+    def __init__(self,sample_num,feature_num):
+        normal_data = torch.randn(int(sample_num/2),feature_num,dtype=torch.double)
+        binary_data = torch.rand(sample_num-int(sample_num/2),feature_num,dtype=torch.double)
+        binary_data = binary(binary_data)
+        data001 = (normal_data /16 + 0.25)*2*3.14159
+        data002 = (normal_data /16 + 0.75)*2*3.14159
+        data01=0.8*data001+0.2*data002 + 0.12* data001 + 0.14 * data001
+        data02=0.2*data001+0.8*data002 + 0.12*data002 + 0.18 * data002
+        input_data = torch.concat([data01,data02])
+        self.X = limit(input_data,2*3.14159,0)
+        weight = torch.rand(feature_num,1,dtype=torch.double)
+        self.Y =torch.mm(self.X ,weight)
+        self.Y = sign(self.Y)
+        
+
+    def __len__(self):
+        return self.Y.shape[0]
+
+    def __getitem__(self, idx):
+        x = self.X[idx]
+        y = self.Y[idx][0].to(dtype=torch.int64)
+        return x,y
+
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -80,7 +136,7 @@ class QFCModel(tq.QuantumModule):
     def forward(self, x, use_qiskit=False):
         backend = provider.get_backend('ibmq_jakarta')
         bsz = x.shape[0]
-        x = F.avg_pool2d(x, 6).view(bsz, 16)
+        x = x.view(bsz, 16)
         circs_pulse = self.encoder.to_qiskit(4,x)
         print(circs_pulse)
         circs_pulse[0].draw()
@@ -106,30 +162,47 @@ class QFCModel(tq.QuantumModule):
 
 
 def train(dataflow, model, device, optimizer):
-    for feed_dict in dataflow['train']:
-        inputs = feed_dict['image'].to(device)
-        targets = feed_dict['digit'].to(device)
+    target_all = []
+    output_all = []
+    
+    for batch_idx, (data, target) in enumerate(dataflow):
+        inputs = data.to(device)
+        targets = target.to(device)
 
         outputs = model(inputs)
+
         loss = F.nll_loss(outputs, targets)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        print(f"loss: {loss.item()}", end='\r')
+
+        target_all.append(targets)
+        output_all.append(outputs)
+
+    target_all = torch.cat(target_all, dim=0)
+    output_all = torch.cat(output_all, dim=0)
+
+    _, indices = output_all.topk(1, dim=1)
+    masks = indices.eq(target_all.view(-1, 1).expand_as(indices))
+    size = target_all.shape[0]
+    corrects = masks.sum().item()
+    accuracy = corrects / size
+
+    return accuracy
 
 
-def valid_test(dataflow, split, model, device, qiskit=False):
+def valid_test(dataflow, model, device, qiskit=False):
     target_all = []
     output_all = []
     with torch.no_grad():
-        for feed_dict in dataflow[split]:
-            inputs = feed_dict['image'].to(device)
-            targets = feed_dict['digit'].to(device)
-
-            outputs = model(inputs, use_qiskit=qiskit)
+        for batch_idx, (data, target) in enumerate(dataflow):
+            inputs = data.to(device)
+            targets = target.to(device)
+            outputs = model(inputs)
 
             target_all.append(targets)
             output_all.append(outputs)
+
         target_all = torch.cat(target_all, dim=0)
         output_all = torch.cat(output_all, dim=0)
 
@@ -139,10 +212,7 @@ def valid_test(dataflow, split, model, device, qiskit=False):
     corrects = masks.sum().item()
     accuracy = corrects / size
     loss = F.nll_loss(output_all, target_all).item()
-
-    print(f"{split} set accuracy: {accuracy}")
-    print(f"{split} set loss: {loss}")
-
+    return accuracy
 
 def main():
     parser = argparse.ArgumentParser()
@@ -155,29 +225,7 @@ def main():
 
     args = parser.parse_args()
 
-    seed = 0
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
 
-    dataset = MNIST(
-        root='./mnist_data',
-        train_valid_split_ratio=[0.9, 0.1],
-        digits_of_interest=[0,1,2,3],
-    )
-    dataflow = dict()
-
-    for split in dataset:
-        sampler = torch.utils.data.SequentialSampler(dataset[split])
-        dataflow[split] = torch.utils.data.DataLoader(
-            dataset[split],
-            batch_size=100,
-            sampler=sampler,
-            num_workers=8,
-            pin_memory=True)
-
-    use_cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if use_cuda else "cpu")
 
     model = QFCModel().to(device)
 
@@ -186,15 +234,18 @@ def main():
     scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs)
 
     if args.static:
-        # optionally to switch to the static mode, which can bring speedup
-        # on training
         model.q_layer.static_on(wires_per_block=args.wires_per_block)
 
-    for epoch in range(1, n_epochs + 1):
+    best_acc =0
+    for epoch in range(1, n_epochs +1):
         # train
-        print(f"Epoch {epoch}:")
-        train(dataflow, model, device, optimizer)
-        print(optimizer.param_groups[0]['lr'])
+        # train
+        acc = train(train_data, model, device, optimizer)
+        if best_acc<acc:
+            best_acc = acc
+        print(f'Epoch {epoch}: current acc = {acc},best acc = {best_acc}')
+
+        scheduler.step()
 
 import math
 import qiskit
@@ -421,23 +472,10 @@ def Fucsimulate(cur_best_w):
     backend = provider.get_backend('ibmq_jakarta')
     target_all = []
     output_all = []
-    dataset = MNIST(
-        root='./mnist_data',
-        train_valid_split_ratio=[0.9, 0.1],
-        digits_of_interest=[0,1,2, 3],
-    )
 
-    dataflow = dict()
-
-    for split in dataset:
-        sampler = torch.utils.data.SequentialSampler(dataset[split])
-        dataflow[split] = torch.utils.data.DataLoader(
-            dataset[split],
-            sampler=sampler,
-            num_workers=8,
-            pin_memory=True)
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
+
     with pulse.build(backend) as pulse_prog:
             qc = QuantumCircuit(4)
             qc.cx(1, 0)
@@ -464,41 +502,35 @@ def Fucsimulate(cur_best_w):
         counts = results.data()['counts']
         result = get_expectations_from_counts(counts, 4)
         result = torch.tensor(result)
+        bsz = result.shape[0]
+        result = result.reshape(bsz, 2, 2).sum(-1)     
         result = F.log_softmax(result, dim=1)
         output_all.append(result)
-    for feed_dict in dataflow['train']:
-        targets = feed_dict['digit'].to(device)
-        target_all.append(targets)
-    target_all = torch.cat(target_all, dim=0)
-    output_all = torch.cat(output_all, dim=0)
+    with torch.no_grad():
+        for batch_idx, (data, target) in enumerate(train_data):
+            inputs = data.to(device)
+            targets = target.to(device)
+
+            target_all.append(targets)
+
+        target_all = torch.cat(target_all, dim=0)
+        output_all = torch.cat(output_all, dim=0)
 
     _, indices = output_all.topk(1, dim=1)
     masks = indices.eq(target_all.view(-1, 1).expand_as(indices))
     size = target_all.shape[0]
     corrects = masks.sum().item()
-    result = corrects / size
-    return 1 - result
+    accuracy = corrects / size
+
+    return 1 - accuracy
 
 def test(cur_best_w):
     modified_list = ((cur_best_w[:int(len(cur_best_w)/2)])*np.cos(cur_best_w[int(len(cur_best_w)/2):]) + (cur_best_w[:int(len(cur_best_w)/2)])*np.sin(cur_best_w[int(len(cur_best_w)/2):])*1j)
     modified_list = np.ndarray.tolist(modified_list)
     target_all = []
     output_all = []
-    dataset = MNIST(
-        root='./mnist_data',
-        train_valid_split_ratio=[0.9, 0.1],
-        digits_of_interest=[0, 1 ,2, 3],
-    )
 
-    dataflow = dict()
 
-    for split in dataset:
-        sampler = torch.utils.data.SequentialSampler(dataset[split])
-        dataflow[split] = torch.utils.data.DataLoader(
-            dataset[split],
-            sampler=sampler,
-            num_workers=8,
-            pin_memory=True)
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
     with pulse.build(backend) as pulse_prog:
@@ -520,30 +552,46 @@ def test(cur_best_w):
     for inst, amp in zip(pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions, modified_list):
         inst[1].pulse._amp = amp
     for i in range(0, len(pulse_encoding)):
-        quito_sim = qiskit.providers.aer.PulseSimulator.from_backend(FakeQuito())
-        pulse_sim = assemble(pulse_prog + pulse_encoding[i], backend=quito_sim, shots=128, meas_level = 2, meas_return = 'single')
-        results = quito_sim.run(pulse_sim).result()
+        pulse_sim = assemble(pulse_prog + pulse_encoding[i], backend=backend, shots=128, meas_level = 2, meas_return = 'single')
+        results = backend.run(pulse_sim).result()
         counts = results.data()['counts']
         result = get_expectations_from_counts(counts, 4)
         result = torch.tensor(result)
+        bsz = result.shape[0]
+        result = result.reshape(bsz, 2, 2).sum(-1)
         result = F.log_softmax(result, dim=1)
         output_all.append(result)
-    for feed_dict in dataflow['test']:
-        targets = feed_dict['digit'].to(device)
-        target_all.append(targets)
-    target_all = torch.cat(target_all, dim=0)
-    output_all = torch.cat(output_all, dim=0)
+    with torch.no_grad():
+        for batch_idx, (data, target) in enumerate(test_data):
+            inputs = data.to(device)
+            targets = target.to(device)
+
+            target_all.append(targets)
+
+        target_all = torch.cat(target_all, dim=0)
+        output_all = torch.cat(output_all, dim=0)
 
     _, indices = output_all.topk(1, dim=1)
     masks = indices.eq(target_all.view(-1, 1).expand_as(indices))
     size = target_all.shape[0]
     corrects = masks.sum().item()
-    result = corrects / size
-    return 1 - result
+    accuracy = corrects / size
+
+    return 1 - accuracy
+
 
 if __name__ == '__main__':
     initial_mapping = [5, 3, 4, 1] 
     pdb.set_trace()
+    train_db = RandomDataset(20,16)
+    train_data = DataLoader(train_db, batch_size=20, shuffle=True)
+    test_db = RandomDataset(20,16)
+    test_data = DataLoader(test_db, batch_size=20, shuffle=True)
+
+
+
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
     main()
     print(pulse_encoding)
     seed = 0
@@ -551,7 +599,7 @@ if __name__ == '__main__':
     # example: minimize x1^2 + x2^2 + x3^2 + ...
     dim_design = int(len(amps_list[0]))
     Mid = int(len(amps_list[0])/2)
-    N_total = 50
+    N_total = 15
     N_initial = 3
     bound = np.ones((dim_design, 2)) * np.array([0, 1]) 
     bound[-Mid:] = bound[-Mid:]*360 # -inf < xi < inf
