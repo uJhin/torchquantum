@@ -12,7 +12,7 @@ import numpy as np
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import math
 import sys
-def binary(input,th = 0.5):
+def binary(input,th = 0.5*0.5*2*3.14159):
     output = input.new(input.size())
     output[input >= th] = 1
     output[input < th] = 0
@@ -24,10 +24,10 @@ def limit(input,high = 1.0,low = 0.0):
     output[input >= high] = high
     output[input <= low] = low
     return output
-def sign(input,th = 0.5):
+def sign(input,th = 0.5*0.5*2*3.14159):
     output = input.new(input.size())
     output[input >= th] = 1
-    output[input < th] = -1
+    output[input < th] = 0
     return output
 
 class RandomDataset(Dataset):
@@ -35,16 +35,13 @@ class RandomDataset(Dataset):
         normal_data = torch.randn(int(sample_num/2),feature_num,dtype=torch.double)
         binary_data = torch.rand(sample_num-int(sample_num/2),feature_num,dtype=torch.double)
         binary_data = binary(binary_data)
-        data001 = (normal_data /16 + 0.25)*2*3.14159
-        data002 = (normal_data /16 + 0.75)*2*3.14159
-        data01=0.8*data001+0.2*data002 + 0.12* data001 + 0.14 * data001
-        data02=0.2*data001+0.8*data002 + 0.12*data002 + 0.18 * data002
+        data01 = (normal_data /16 + 0.25)*2*3.14159
+        data02 = (normal_data /16 + 0.75)*2*3.14159
         input_data = torch.concat([data01,data02])
         self.X = limit(input_data,2*3.14159,0)
         weight = torch.rand(feature_num,1,dtype=torch.double)
-        self.Y =torch.mm(self.X ,weight)
+        self.Y =torch.mm(self.X ,weight)/feature_num
         self.Y = sign(self.Y)
-        
 
     def __len__(self):
         return self.Y.shape[0]
@@ -274,26 +271,6 @@ from qiskit.compiler import assemble, schedule
 initial_mapping = [5, 3, 4, 1] 
 backend = provider.get_backend('ibmq_jakarta')
 
-with pulse.build(backend) as pulse_prog:
-        qc = QuantumCircuit(4)
-        qc.cx(1, 0)
-        qc.rz(-4.1026, 3)
-        qc.cx(0,1)
-        qc.h(3)
-        qc.rx(1.2803, 0)
-        qc.ry(0.39487, 1)
-        qc.crx(-3.025, 0, 2)
-        qc.sx(2)
-        qc.cx(3,1)
-        qc.measure_all()
-        qc = transpile(qc, backend = backend, basis_gates=['u1', 'u2', 'u3', 'cx'], initial_layout = initial_mapping, optimization_level=2)
-        print(qc)
-        pulse.call(qc)
-        print(pulse)
-        sched = pulse.Schedule()
-        
-pulse_prog.draw()
-
 """Extract amps"""
 
 def is_parametric_pulse(t0, *inst: Union['Schedule', Instruction]):
@@ -303,25 +280,25 @@ def is_parametric_pulse(t0, *inst: Union['Schedule', Instruction]):
         return True
     return False
 
-amps = [play.pulse.amp for _, play in pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions]
-print(amps)
+def extract(pulse_prog):
+    amps = [play.pulse.amp for _, play in pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions]
+    print(amps)
 
-for _, play in pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions:
-    # print(play.pulse.amp)
-    pass
-    
-    
-instructions = pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions
+    for _, play in pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions:
+        # print(play.pulse.amp)
+        pass                
+    instructions = pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions
 
-amp_list = list(map(lambda x: x[1].pulse.amp, pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions))
-amp_list = np.array([amp_list])
-ampa_list = np.angle(np.array([amp_list]))
-ampn_list = np.abs(np.array([amp_list]))
-amps_list = np.append(ampn_list, ampa_list)
-print(amps_list)
-rag = np.arange(1,1.1,0.05)
-amps_list = [amps_list*x for x in rag]
-amps_list = np.array(amps_list)
+    amp_list = list(map(lambda x: x[1].pulse.amp, pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions))
+    amp_list = np.array([amp_list])
+    ampa_list = np.angle(np.array([amp_list]))
+    ampn_list = np.abs(np.array([amp_list]))
+    amps_list = np.append(ampn_list, ampa_list)
+    print(amps_list)
+    rag = np.arange(1,1.1,0.05)
+    amps_list = [amps_list*x for x in rag]
+    amps_list = np.array(amps_list)
+    return amps_list
 
 
 def get_expectations_from_counts(counts, qubits):
@@ -476,28 +453,16 @@ def Fucsimulate(cur_best_w):
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    with pulse.build(backend) as pulse_prog:
-            qc = QuantumCircuit(4)
-            qc.cx(1, 0)
-            qc.rz(-4.1026, 3)
-            qc.cx(0,1)
-            qc.h(3)
-            qc.rx(1.2803, 0)
-            qc.ry(0.39487, 1)
-            qc.crx(-3.025, 0, 2)
-            qc.sx(2)
-            qc.cx(3,1)
-            qc.measure_all()
-            print(qc)
-            qc = transpile(qc, backend = backend, basis_gates=['u1', 'u2', 'u3', 'cx'],initial_layout = initial_mapping, optimization_level=2)
-            pulse.call(qc)
-            print(pulse)
+   
     for inst, amp in zip(pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions, modified_list):
         inst[1].pulse._amp = amp
 
         #quito_sim = qiskit.providers.aer.PulseSimulator.from_backend(FakeQuito())
     for i in range(0, len(pulse_encoding)):
-        pulse_sim = assemble(pulse_prog + pulse_encoding[i], backend=backend, shots=128)
+        with pulse.build(backend) as pulse_forsim:
+            pulse.call(pulse_encoding[i])
+            pulse_forsim += pulse_prog 
+        pulse_sim = assemble(pulse_forsim, backend=backend, shots=128)
         results = backend.run(pulse_sim).result()
         counts = results.data()['counts']
         result = get_expectations_from_counts(counts, 4)
@@ -533,26 +498,30 @@ def test(cur_best_w):
 
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
-    with pulse.build(backend) as pulse_prog:
-            qc = QuantumCircuit(4)
-            qc.cx(1, 0)
-            qc.rz(-4.1026, 3)
-            qc.cx(0,1)
-            qc.h(3)
-            qc.rx(1.2803, 0)
-            qc.ry(0.39487, 1)
-            qc.crx(-3.025, 0, 2)
-            qc.sx(2)
-            qc.cx(3,1)
-            qc.measure_all()
-            qc = transpile(qc, backend = backend, basis_gates=['u1', 'u2', 'u3', 'cx'], initial_layout = initial_mapping, optimization_level=2)
-            print(qc)
-            pulse.call(qc)
-            print(pulse)
-    for inst, amp in zip(pulse_prog.blocks[0].operands[0].filter(is_parametric_pulse).instructions, modified_list):
+    with pulse.build(backend) as pulse_pro:
+        qc = QuantumCircuit(4)
+        qc.cx(1, 0)
+        qc.rz(-4.1026, 3)
+        qc.cx(0,1)
+        qc.h(3)
+        qc.rx(1.2803, 0)
+        qc.ry(0.39487, 1)
+        qc.crx(-3.025, 0, 2)
+        qc.sx(2)
+        qc.cx(3,1)
+        qc.measure_all()
+        qc = transpile(qc, backend = backend, basis_gates=['u1', 'u2', 'u3', 'cx'], initial_layout = initial_mapping, optimization_level=2)
+        print(qc)
+        pulse.call(qc)
+        print(pulse)
+
+    for inst, amp in zip(pulse_pro.blocks[0].operands[0].filter(is_parametric_pulse).instructions, modified_list):
         inst[1].pulse._amp = amp
     for i in range(0, len(pulse_encoding)):
-        pulse_sim = assemble(pulse_prog + pulse_encoding[i], backend=backend, shots=128, meas_level = 2, meas_return = 'single')
+        with pulse.build(backend) as pulse_forsi:
+            pulse.call(pulse_encoding[i])
+            pulse_forsi += pulse_pro 
+        pulse_sim = assemble(pulse_forsi, backend=backend, shots=128, meas_level = 2, meas_return = 'single')
         results = backend.run(pulse_sim).result()
         counts = results.data()['counts']
         result = get_expectations_from_counts(counts, 4)
@@ -583,19 +552,37 @@ def test(cur_best_w):
 if __name__ == '__main__':
     initial_mapping = [5, 3, 4, 1] 
     pdb.set_trace()
-    train_db = RandomDataset(20,16)
-    train_data = DataLoader(train_db, batch_size=20, shuffle=True)
-    test_db = RandomDataset(20,16)
-    test_data = DataLoader(test_db, batch_size=20, shuffle=True)
+    train_db = RandomDataset(100,16)
+    train_data = DataLoader(train_db, batch_size=100, shuffle=True)
+    test_db = RandomDataset(100,16)
+    test_data = DataLoader(test_db, batch_size=100, shuffle=True)
 
 
 
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
     main()
-    print(pulse_encoding)
     seed = 0
     np.random.seed(seed)
+    with pulse.build(backend) as pulse_prog:
+        qc = QuantumCircuit(4)
+        qc.cx(1, 0)
+        qc.rz(-4.1026, 3)
+        qc.cx(0,1)
+        qc.h(3)
+        qc.rx(1.2803, 0)
+        qc.ry(0.39487, 1)
+        qc.crx(-3.025, 0, 2)
+        qc.sx(2)
+        qc.cx(3,1)
+        qc.measure_all()
+        qc = transpile(qc, backend = backend, basis_gates=['u1', 'u2', 'u3', 'cx'], initial_layout = initial_mapping, optimization_level=2)
+        print(qc)
+        pulse.call(qc)
+        print(pulse)
+    seed = 0
+    np.random.seed(seed)
+    amps_list = extract(pulse_prog)
     # example: minimize x1^2 + x2^2 + x3^2 + ...
     dim_design = int(len(amps_list[0]))
     Mid = int(len(amps_list[0])/2)
